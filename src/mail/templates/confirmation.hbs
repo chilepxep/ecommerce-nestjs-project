@@ -1,0 +1,72 @@
+<html>
+  <head>
+    <meta charset='utf-8' />
+    <style>
+      .container {
+        font-family: Arial, sans-serif;
+        max-width: 600px;
+        margin: 0 auto;
+        padding: 20px;
+        border: 1px solid #eaeaea;
+        border-radius: 10px;
+      }
+      .header {
+        text-align: center;
+        background-color: #f8f9fa;
+        padding: 10px;
+        border-radius: 8px 8px 0 0;
+      }
+      .content {
+        padding: 20px;
+        color: #333;
+        line-height: 1.6;
+      }
+      .otp-box {
+        text-align: center;
+        margin: 30px 0;
+      }
+      .otp-code {
+        font-size: 36px;
+        font-weight: bold;
+        letter-spacing: 8px;
+        color: #007bff;
+        background-color: #f0f8ff;
+        padding: 15px 30px;
+        border-radius: 8px;
+        border: 2px dashed #007bff;
+        display: inline-block;
+      }
+      .footer {
+        margin-top: 30px;
+        font-size: 12px;
+        color: #888;
+        text-align: center;
+        border-top: 1px solid #eee;
+        padding-top: 20px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class='container'>
+      <div class='header'>
+        <h2 style='color: #007bff; margin: 0;'>Cửa Hàng Của Bạn</h2>
+      </div>
+      <div class='content'>
+        <h3>Xin chào {{fullName}},</h3>
+        <p>Cảm ơn bạn đã đăng ký tài khoản. Để hoàn tất việc xác thực email, vui
+          lòng nhập mã OTP gồm 6 chữ số dưới đây vào ứng dụng:</p>
+
+        <div class='otp-box'>
+          <div class='otp-code'>{{otp}}</div>
+        </div>
+
+        <p><em>*Lưu ý: Mã xác nhận này sẽ hết hạn sau 5 phút. Tuyệt đối không
+            chia sẻ mã này cho bất kỳ ai.</em></p>
+      </div>
+      <div class='footer'>
+        <p>Email này được gửi tự động, vui lòng không trả lời.</p>
+        <p>&copy; 2026 Bản quyền thuộc về Cửa Hàng Của Bạn.</p>
+      </div>
+    </div>
+  </body>
+</html>

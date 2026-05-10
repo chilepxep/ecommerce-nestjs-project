@@ -11,6 +11,9 @@ import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
+import { MailModule } from './mail/mail.module';
+import { RedisModule } from './redis/redis.module';
+import { AuthModule } from './auth/auth.module';
 
 @Module({
   imports: [
@@ -44,6 +47,12 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
         limit: 1000,
       },
     ]),
+
+    MailModule,
+
+    RedisModule,
+
+    AuthModule,
   ],
   controllers: [AppController],
   providers: [
