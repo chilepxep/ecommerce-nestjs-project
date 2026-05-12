@@ -61,9 +61,10 @@ enum HttpMethod {
 
 model Role {
   id          Int       @id @default(autoincrement())
-  code        RoleCode  @unique
+  code        String    @unique @db.VarChar(50)
   name        String    @db.VarChar(100)
   description String?   @db.Text
+  isSystem    Boolean   @default(false) @map("is_system")
 
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
