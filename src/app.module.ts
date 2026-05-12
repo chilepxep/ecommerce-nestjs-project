@@ -15,6 +15,7 @@ import { MailModule } from './mail/mail.module';
 import { RedisModule } from './redis/redis.module';
 import { AuthModule } from './auth/auth.module';
 import { BullModule } from '@nestjs/bullmq';
+import { PermissionsModule } from './permissions/permissions.module';
 
 @Module({
   imports: [
@@ -67,6 +68,8 @@ import { BullModule } from '@nestjs/bullmq';
     RedisModule,
 
     AuthModule,
+
+    PermissionsModule,
   ],
   controllers: [AppController],
   providers: [

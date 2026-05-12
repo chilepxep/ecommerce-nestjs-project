@@ -27,28 +27,52 @@ export class AllExceptionsFilter implements ExceptionFilter {
         ? exception.getStatus()
         : HttpStatus.INTERNAL_SERVER_ERROR;
 
-    const message =
+    const exceptionResponse =
       exception instanceof HttpException
         ? exception.getResponse()
-        : 'Internal server error';
+        : { message: 'Internal server error' };
+
+    // Bóc tách chính xác message báo lỗi
+    let errorMessage: string | string[] = 'Internal server error';
+    if (typeof exceptionResponse === 'object' && exceptionResponse !== null) {
+      errorMessage = (exceptionResponse as any).message || exceptionResponse;
+    }
 
     const errorResponse = {
       statusCode: status,
       timestamp: new Date().toISOString(),
       path: request.url,
       method: request.method,
-      message:
-        typeof message === 'object' && 'message' in (message as object)
-          ? (message as any).message
-          : message,
+      message: errorMessage,
     };
 
-    // Log lỗi với đầy đủ thông tin
-    this.logger.error(
-      `${request.method} ${request.url} - ${status}`,
-      exception instanceof Error ? exception.stack : String(exception),
-      'HttpExceptionFilter',
-    );
+    // ==========================================
+    // KHU VỰC FORMAT LOG CHO TERMINAL ĐẸP MẮT
+    // ==========================================
+
+    // Nếu là mảng lỗi (Validation Pipe thường trả về mảng), ta map nó xuống dòng cho dễ đọc
+    const formattedMessage = Array.isArray(errorMessage)
+      ? `\n    - ` + errorMessage.join(`\n    - `)
+      : errorMessage;
+
+    const logPrefix = `[${request.method} ${request.url}] | Status: ${status}`;
+
+    if (status >= 500) {
+      // Lỗi Server: In màu Đỏ (error) kèm theo Stack Trace để debug
+      const stack =
+        exception instanceof Error ? exception.stack : String(exception);
+      this.logger.error(
+        `${logPrefix} | Error: ${formattedMessage}`,
+        stack,
+        'ExceptionsFilter',
+      );
+    } else {
+      // Lỗi Client/Nghiệp vụ (4xx): In màu Vàng (warn), KHÔNG cần Stack Trace làm rác Terminal
+      this.logger.warn(
+        `${logPrefix} | Error: ${formattedMessage}`,
+        'ExceptionsFilter',
+      );
+    }
 
     response.status(status).json(errorResponse);
   }
