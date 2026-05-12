@@ -47,6 +47,14 @@ enum RoleCode {
   CUSTOMER
 }
 
+enum HttpMethod {
+  GET
+  POST
+  PUT
+  PATCH
+  DELETE
+}
+
 // ======================================================
 // ROLE
 // ======================================================
@@ -61,6 +69,7 @@ model Role {
   updatedAt   DateTime  @updatedAt @map("updated_at")
 
   users       User[]
+  permissions RolePermission[]
 
   @@map("roles")
 }
@@ -176,3 +185,32 @@ model ActionLog {
 
   @@map("action_logs")
 }
+
+
+model Permission {
+  id          String   @id @default(uuid())
+
+  name        String   @db.VarChar(100)   
+  apiPath     String   @map("api_path") @db.VarChar(255) 
+  method      HttpMethod                   
+  module      String   @db.VarChar(100)  
+  roles       RolePermission[]
+
+  @@unique([apiPath, method])   // Không duplicate cùng route+method
+  @@index([module])
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId        Int        @map("role_id")
+  permissionId  String     @map("permission_id")
+
+  role          Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission    Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  assignedAt    DateTime   @default(now()) @map("assigned_at")
+
+  @@id([roleId, permissionId])  // Composite PK
+  @@map("role_permissions")
+}
+

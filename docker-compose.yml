@@ -5,22 +5,38 @@ services:
     image: redis:7-alpine
     container_name: ecommerce_redis
     restart: unless-stopped
+
     ports:
       - '6379:6379'
+
+    # Redis production settings
     command: >
       redis-server
       --requirepass ${REDIS_PASSWORD:-chilepxep}
       --appendonly yes
+      --appendfsync everysec
       --maxmemory 256mb
-      --maxmemory-policy allkeys-lru
+      --maxmemory-policy noeviction
+      --tcp-keepalive 60
+      --timeout 0
+
     volumes:
       - redis_data:/data
+
     healthcheck:
       test: ['CMD', 'redis-cli', '-a', '${REDIS_PASSWORD:-chilepxep}', 'ping']
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
+
+    networks:
+      - ecommerce_network
 
 volumes:
   redis_data:
     driver: local
+
+networks:
+  ecommerce_network:
+    driver: bridge

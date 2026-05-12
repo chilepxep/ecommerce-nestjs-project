@@ -9,7 +9,7 @@ export class MailController {
   @Post('test-mail')
   async testMail(@Body() body: { email: string; fullName: string }) {
     // 1. Hardcode một mã OTP để test
-    const testOtp = '123456';
+    const testOtp = '769865';
 
     // 2. Gọi hàm gửi thư từ Service
     await this.mailService.sendUserConfirmation(

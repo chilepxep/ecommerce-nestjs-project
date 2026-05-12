@@ -8,23 +8,14 @@ import * as nodemailer from 'nodemailer';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as handlebars from 'handlebars';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 
 @Injectable()
 export class MailService {
-  private transporter: nodemailer.Transporter;
   private readonly logger = new Logger(MailService.name);
 
-  constructor(private readonly configService: ConfigService) {
-    this.transporter = nodemailer.createTransport({
-      host: this.configService.get<string>('MAIL_HOST'),
-      port: Number(this.configService.get<string>('MAIL_PORT')),
-      secure: false,
-      auth: {
-        user: this.configService.get<string>('MAIL_USER'),
-        pass: this.configService.get<string>('MAIL_PASSWORD'),
-      },
-    });
-  }
+  constructor(@InjectQueue('mail-queue') private mailQueue: Queue) {}
 
   /**
    * @param toEmail Email người nhận
@@ -33,52 +24,20 @@ export class MailService {
    */
   async sendUserConfirmation(toEmail: string, fullName: string, otp: string) {
     try {
-      // 1. Cố gắng tìm file trong thư mục build (dist)
-      let templatePath = path.join(__dirname, 'templates', 'confirmation.hbs');
-
-      // 2. CHIẾN THUẬT FALLBACK: Nếu trong dist không có, quay về đọc thẳng từ src gốc
-      if (!fs.existsSync(templatePath)) {
-        this.logger.warn(
-          'Không tìm thấy template trong dist, đang đọc từ src...',
-        );
-        // process.cwd() sẽ lấy thư mục gốc của dự án (ecommerce-api)
-        templatePath = path.join(
-          process.cwd(),
-          'src',
-          'mail',
-          'templates',
-          'confirmation.hbs',
-        );
-      }
-
-      // 3. Đọc nội dung file
-      const templateSource = fs.readFileSync(templatePath, 'utf8');
-      const compiledTemplate = handlebars.compile(templateSource);
-
-      const htmlContent = compiledTemplate({
-        fullName: fullName,
-        otp: otp,
-      });
-
-      await this.transporter.sendMail({
-        from: this.configService.get<string>('MAIL_FROM'),
-        to: toEmail,
-        subject: 'Mã xác thực OTP tài khoản',
-        html: htmlContent,
-      });
-
-      this.logger.log(`Đã gửi email chứa mã OTP thành công tới: ${toEmail}`);
-    } catch (error) {
-      this.logger.log(
-        `MAIL_USER=${this.configService.get<string>('MAIL_USER')}`,
+      await this.mailQueue.add(
+        'send-otp', // Tên của công việc (Job Name)
+        { toEmail, fullName, otp }, // Dữ liệu của công việc (Job Data)
+        {
+          attempts: 3, // Nếu gửi mail lỗi (do rớt mạng), tự động thử lại 3 lần
+          backoff: { type: 'exponential', delay: 3000 }, // Mỗi lần thử lại cách nhau lâu hơn (3s, 9s, 27s...)
+          removeOnComplete: true, // Gửi xong thì xóa khỏi Redis cho nhẹ máy
+        },
       );
       this.logger.log(
-        `MAIL_PASS length=${this.configService.get<string>('MAIL_PASS')?.length}`,
+        `Đã đẩy nhiệm vụ gửi OTP cho ${toEmail} vào hàng đợi ngầm.`,
       );
-      this.logger.error(`Lỗi khi gửi email tới ${toEmail}:`, error);
-      throw new InternalServerErrorException(
-        'Không thể gửi email OTP lúc này.',
-      );
+    } catch (error: any) {
+      this.logger.error(`Lỗi khi đưa mail vào Queue: ${error.message}`);
     }
   }
 }

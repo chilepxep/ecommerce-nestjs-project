@@ -38,6 +38,8 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
         'ecommerce-api-application',
       ),
       connectionLimit: this.config.get<number>('DB_POOL_SIZE', 10),
+      allowPublicKeyRetrieval: true,
+      ssl: false,
     });
 
     // ── Closure variable — accessible bên trong $extends callback ────────
