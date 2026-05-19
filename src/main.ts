@@ -5,6 +5,7 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
+import cookieParser from 'cookie-parser';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
@@ -17,6 +18,9 @@ async function bootstrap() {
 
   // ─── Dùng Winston làm logger mặc định ──────────
   app.useLogger(logger);
+
+  //cookie
+  app.use(cookieParser());
 
   // ─── Helmet: bảo vệ HTTP headers ───────────────
   app.use(

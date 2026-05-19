@@ -16,7 +16,8 @@ import { RolesService } from './roles.service';
 import { CreateRoleDto, PermissionIdsDto } from './dto/create-role.dto';
 import { UpdateRoleDto } from './dto/update-role.dto';
 import { ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
-import { IUser } from '@/common/interfaces/user.interface';
+import type { IUser } from '@/common/interfaces/user.interface';
+import { CurrentUser } from '@/common/decorator/current-user.decorator';
 
 @Controller('roles')
 @ApiBearerAuth('JWT')
@@ -26,16 +27,12 @@ export class RolesController {
 
   @Post()
   @ApiOperation({ summary: 'Tạo role mới' })
-  create(@Body() dto: CreateRoleDto, @Ip() ip: string) {
-    const currentUser: IUser = {
-      id: '4ec92eab-4dd8-11f1-9d78-088fc30ad3d5',
-      email: 'admin@example.com',
-      role: {
-        id: 1,
-        name: 'Administrator',
-      },
-    };
-    return this.rolesService.create(dto, currentUser, ip);
+  create(
+    @Body() dto: CreateRoleDto,
+    @Ip() ip: string,
+    @CurrentUser() user: IUser,
+  ) {
+    return this.rolesService.create(dto, user, ip);
   }
 
   @Get()
@@ -56,31 +53,20 @@ export class RolesController {
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateRoleDto,
     @Ip() ip: string,
+    @CurrentUser() user: IUser,
   ) {
-    const currentUser: IUser = {
-      id: '4ec92eab-4dd8-11f1-9d78-088fc30ad3d5',
-      email: 'admin@example.com',
-      role: {
-        id: 1,
-        name: 'Administrator',
-      },
-    };
-    return this.rolesService.update(id, dto, currentUser, ip);
+    return this.rolesService.update(id, dto, user, ip);
   }
 
   @Delete(':id')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Xóa role' })
-  remove(@Param('id', ParseIntPipe) id: number, @Ip() ip: string) {
-    const currentUser: IUser = {
-      id: '4ec92eab-4dd8-11f1-9d78-088fc30ad3d5',
-      email: 'admin@example.com',
-      role: {
-        id: 1,
-        name: 'Administrator',
-      },
-    };
-    return this.rolesService.remove(id, currentUser, ip);
+  remove(
+    @Param('id', ParseIntPipe) id: number,
+    @Ip() ip: string,
+    @CurrentUser() user: IUser,
+  ) {
+    return this.rolesService.remove(id, user, ip);
   }
 
   @Put(':id/permissions')
@@ -89,21 +75,9 @@ export class RolesController {
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: PermissionIdsDto,
     @Ip() ip: string,
+    @CurrentUser() user: IUser,
   ) {
-    const currentUser: IUser = {
-      id: '4ec92eab-4dd8-11f1-9d78-088fc30ad3d5',
-      email: 'admin@example.com',
-      role: {
-        id: 1,
-        name: 'Administrator',
-      },
-    };
-    return this.rolesService.assignPermissions(
-      id,
-      dto.permissionIds,
-      currentUser,
-      ip,
-    );
+    return this.rolesService.assignPermissions(id, dto.permissionIds, user, ip);
   }
 
   @Delete(':id/permissions')
@@ -113,20 +87,8 @@ export class RolesController {
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: PermissionIdsDto,
     @Ip() ip: string,
+    @CurrentUser() user: IUser,
   ) {
-    const currentUser: IUser = {
-      id: '4ec92eab-4dd8-11f1-9d78-088fc30ad3d5',
-      email: 'admin@example.com',
-      role: {
-        id: 1,
-        name: 'Administrator',
-      },
-    };
-    return this.rolesService.revokePermissions(
-      id,
-      dto.permissionIds,
-      currentUser,
-      ip,
-    );
+    return this.rolesService.revokePermissions(id, dto.permissionIds, user, ip);
   }
 }

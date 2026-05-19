@@ -63,4 +63,82 @@ export class RedisService {
   async invalidateEmailCache(email: string): Promise<void> {
     await this.cache.del(this.emailExistsKey(email));
   }
+
+  //------Session keys---------------------------
+  private sessionKey(jti: string) {
+    return `session:${jti}`;
+  }
+
+  private revokedKey(jti: string) {
+    return `revoked:${jti}`;
+  }
+
+  private userSessionsKey(userId: string) {
+    return `user:sessions:${userId}`;
+  }
+
+  // ─── Cache session info (tránh query DB mỗi request) ──────────
+  async cacheSession(
+    jti: string,
+    data: {
+      userId: string;
+      tokenVersion: number;
+      roleCode: string;
+    },
+    ttlSeconds: number,
+  ): Promise<void> {
+    await this.cache.set(
+      this.sessionKey(jti),
+      JSON.stringify(data),
+      ttlSeconds * 1000,
+    );
+  }
+
+  async getSession(jti: string): Promise<{
+    userId: string;
+    tokenVersion: number;
+    roleCode: string;
+  } | null> {
+    const raw = await this.cache.get<string>(this.sessionKey(jti));
+    return raw ? JSON.parse(raw) : null;
+  }
+
+  async deleteSession(jti: string): Promise<void> {
+    await this.cache.del(this.sessionKey(jti));
+  }
+
+  // ─── Revoked token blacklist ───────────────────────────────────
+  // Chỉ cần lưu đến khi accessToken hết hạn (15 phút)
+  async revokeSession(jti: string, ttlSeconds = 900): Promise<void> {
+    await Promise.all([
+      this.cache.set(this.revokedKey(jti), true, ttlSeconds * 1000),
+      this.deleteSession(jti),
+    ]);
+  }
+
+  async isSessionRevoked(jti: string): Promise<boolean> {
+    return (await this.cache.get<boolean>(this.revokedKey(jti))) ?? false;
+  }
+
+  // ─── Track user sessions (để hiển thị danh sách thiết bị) ──────
+  async addUserSession(userId: string, jti: string): Promise<void> {
+    const key = this.userSessionsKey(userId);
+    const raw = await this.cache.get<string>(key);
+    const sessions: string[] = raw ? JSON.parse(raw) : [];
+
+    if (!sessions.includes(jti)) sessions.push(jti);
+
+    // TTL 30 ngày — bằng refresh token max
+    await this.cache.set(key, JSON.stringify(sessions), 30 * 24 * 3600 * 1000);
+  }
+
+  async removeUserSession(userId: string, jti: string): Promise<void> {
+    const key = this.userSessionsKey(userId);
+    const raw = await this.cache.get<string>(key);
+    if (!raw) return;
+
+    const sessions: string[] = JSON.parse(raw);
+    const updated = sessions.filter((s) => s !== jti);
+    await this.cache.set(key, JSON.stringify(updated), 30 * 24 * 3600 * 1000);
+  }
 }

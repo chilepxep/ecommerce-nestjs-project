@@ -17,6 +17,8 @@ import { AuthModule } from './auth/auth.module';
 import { BullModule } from '@nestjs/bullmq';
 import { PermissionsModule } from './permissions/permissions.module';
 import { RolesModule } from './roles/roles.module';
+import { JwtModule } from '@nestjs/jwt';
+import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 
 @Module({
   imports: [
@@ -64,6 +66,8 @@ import { RolesModule } from './roles/roles.module';
       }),
     }),
 
+    JwtModule.register({}),
+
     MailModule,
 
     RedisModule,
@@ -96,6 +100,10 @@ import { RolesModule } from './roles/roles.module';
     {
       provide: APP_INTERCEPTOR,
       useClass: LoggingInterceptor,
+    },
+    {
+      provide: APP_GUARD,
+      useClass: JwtAuthGuard,
     },
   ],
 })

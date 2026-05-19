@@ -8,13 +8,19 @@ import {
   InternalServerErrorException,
   Logger,
   NotFoundException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { RegisterDto, ResendOtpDto, VerifyEmailDto } from './dto/register.dto';
 import { ActionType, RoleCode, UserStatus } from '@/generated/prisma/enums';
 import { randomInt } from 'crypto';
 import * as bcrypt from 'bcrypt';
 import { Prisma } from '@/generated/prisma/client';
-import { error } from 'console';
+import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
+import { IUser } from '@/common/interfaces/user.interface';
+import { LoginDto } from './dto/login.dto';
+import { randomUUID } from 'crypto';
+import { UAParser } from 'ua-parser-js';
 
 @Injectable()
 export class AuthService {
@@ -27,13 +33,20 @@ export class AuthService {
     private prisma: PrismaService,
     private redis: RedisService,
     private mail: MailService,
+    private jwt: JwtService,
+    private config: ConfigService,
   ) {}
 
+  private readonly ACCESS_TTL = 15 * 60; // 15 phút (giây)
+  private readonly REFRESH_TTL = 7 * 24 * 3600; // 7 ngày (giây)
+  private readonly MAX_SESSIONS = 5; // Tối đa 5 thiết bị
+
   //HELPERS
+  //tạo otp
   private generateOtp(): string {
     return randomInt(100000, 999999).toString();
   }
-
+  //ghi log
   private async logAction(data: {
     action: ActionType;
     entityName: string;
@@ -63,12 +76,65 @@ export class AuthService {
       },
     });
   }
+
+  //so sánh otp
   private async timingSafeCompare(a: string, b: string): Promise<boolean> {
     const { timingSafeEqual } = await import('crypto');
     if (a.length !== b.length) return false;
     return timingSafeEqual(Buffer.from(a), Buffer.from(b));
   }
 
+  //tạo payload access token
+  private signAccessToken(payload: IUser): string {
+    return this.jwt.sign(payload, {
+      secret: this.config.get('JWT_ACCESS_SECRET'),
+      expiresIn: this.ACCESS_TTL,
+    });
+  }
+
+  private async enforceSessionLimit(userId: string) {
+    const activeSessions = await this.prisma.db.session.findMany({
+      where: {
+        userId,
+        revokedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+      orderBy: { createdAt: 'asc' }, // Cũ nhất trước
+      select: { id: true, jti: true },
+    });
+
+    if (activeSessions.length >= this.MAX_SESSIONS) {
+      // Xóa session cũ nhất
+      const oldest = activeSessions[0];
+      await Promise.all([
+        this.prisma.db.session.update({
+          where: { id: oldest.id },
+          data: {
+            revokedAt: new Date(),
+            revokedReason: 'Session limit exceeded',
+          },
+        }),
+        this.redis.revokeSession(oldest.jti, this.ACCESS_TTL),
+      ]);
+    }
+  }
+
+  private async revokeAllUserSessions(userId: string, reason: string) {
+    const sessions = await this.prisma.db.session.findMany({
+      where: { userId, revokedAt: null },
+      select: { id: true, jti: true },
+    });
+
+    await Promise.all([
+      this.prisma.db.session.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt: new Date(), revokedReason: reason },
+      }),
+      ...sessions.map((s) => this.redis.revokeSession(s.jti, this.ACCESS_TTL)),
+    ]);
+  }
+
+  //---------Đăng ký-------------
   async register(dto: RegisterDto, ipAddress?: string) {
     const { email, password, fullName, phone } = dto;
 
@@ -305,5 +371,325 @@ export class AuthService {
     }
 
     return { message: 'OTP mới đã được gửi đến email của bạn.' };
+  }
+
+  //----------Đăng nhập------------
+
+  async login(dto: LoginDto, ipAddress: string, userAgent: string) {
+    const { email, password, deviceName } = dto;
+
+    // 1. Tìm user kèm role
+    const user = await this.prisma.db.user.findUnique({
+      where: { email },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        password: true,
+        status: true,
+        deletedAt: true,
+        role: { select: { id: true, code: true } },
+      },
+    });
+
+    // Trả cùng 1 lỗi để tránh user enumeration
+    if (!user || !user.password) {
+      throw new UnauthorizedException('Email hoặc mật khẩu không đúng');
+    }
+
+    // 2. Kiểm tra trạng thái tài khoản
+    if (user.deletedAt) {
+      throw new UnauthorizedException('Tài khoản không tồn tại');
+    }
+    if (user.status === UserStatus.PENDING) {
+      throw new UnauthorizedException('Tài khoản chưa xác thực email');
+    }
+    if (user.status === UserStatus.BANNED) {
+      throw new UnauthorizedException('Tài khoản đã bị khóa');
+    }
+
+    // 3. Verify password
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      throw new UnauthorizedException('Email hoặc mật khẩu không đúng');
+    }
+
+    // 4. Giới hạn số session — xóa session cũ nhất nếu vượt quá MAX
+    await this.enforceSessionLimit(user.id);
+
+    // 5. Parse user agent
+    const ua = new UAParser(userAgent);
+    const parsedDevice =
+      deviceName ??
+      `${ua.getBrowser().name ?? 'Unknown'} on ${ua.getOS().name ?? 'Unknown'}`;
+
+    // 6. Tạo token pair
+    const jti = randomUUID();
+    const refreshToken = randomUUID(); // opaque token
+    const refreshTokenHash = await bcrypt.hash(refreshToken, 10);
+
+    const expiresAt = new Date(Date.now() + this.REFRESH_TTL * 1000);
+
+    // 7. Tạo Session trong DB + cập nhật lastLoginAt SONG SONG
+    const [session] = await Promise.all([
+      this.prisma.db.session.create({
+        data: {
+          userId: user.id,
+          jti,
+          refreshTokenHash,
+          tokenVersion: 1,
+          deviceName: parsedDevice,
+          deviceIp: ipAddress,
+          userAgent,
+          expiresAt,
+        },
+      }),
+      this.prisma.db.user.update({
+        where: { id: user.id },
+        data: { lastLoginAt: new Date() },
+      }),
+    ]);
+
+    // 8. Cache session vào Redis
+    await Promise.all([
+      this.redis.cacheSession(
+        jti,
+        { userId: user.id, tokenVersion: 1, roleCode: user.role.code },
+        this.REFRESH_TTL,
+      ),
+      this.redis.addUserSession(user.id, jti),
+    ]);
+
+    // 9. Ký accessToken
+    const accessToken = this.signAccessToken({
+      id: user.id,
+      jti,
+      email: user.email,
+      roleCode: user.role.code,
+      tokenVersion: 1,
+    });
+
+    // 10. Log
+    this.logAction({
+      action: ActionType.LOGIN,
+      entityName: 'Session',
+      entityId: session.id,
+      adminId: user.id,
+      newValues: { device: parsedDevice, ip: ipAddress },
+      ipAddress,
+    }).catch((err) => this.logger.error('ActionLog failed', err));
+
+    return { accessToken, refreshToken, jti, sessionId: session.id };
+  }
+
+  async refresh(refreshToken: string, jti: string) {
+    // 1. Tìm session trong DB (Redis không lưu refreshToken hash)
+    const session = await this.prisma.db.session.findUnique({
+      where: { jti },
+      include: {
+        user: {
+          select: {
+            id: true,
+            email: true,
+            status: true,
+            role: { select: { code: true } },
+          },
+        },
+      },
+    });
+
+    if (!session) throw new UnauthorizedException('Phiên không hợp lệ');
+
+    // 2. Kiểm tra các điều kiện
+    if (session.revokedAt) {
+      throw new UnauthorizedException('Phiên đã bị thu hồi');
+    }
+    if (session.expiresAt < new Date()) {
+      throw new UnauthorizedException('Phiên đã hết hạn');
+    }
+    if (session.user.status !== UserStatus.ACTIVE) {
+      throw new UnauthorizedException('Tài khoản không hợp lệ');
+    }
+
+    // 3. Verify refresh token hash
+    const isValid = await bcrypt.compare(
+      refreshToken,
+      session.refreshTokenHash,
+    );
+    if (!isValid) {
+      // Token không khớp → có thể bị đánh cắp → revoke toàn bộ session
+      await this.revokeAllUserSessions(
+        session.userId,
+        'Phát hiện refresh token bất thường',
+      );
+      throw new UnauthorizedException(
+        'Token không hợp lệ. Tất cả phiên đã bị đăng xuất.',
+      );
+    }
+
+    // 4. Rotate: tạo refreshToken mới + tăng tokenVersion
+    const newRefreshToken = randomUUID();
+    const newRefreshTokenHash = await bcrypt.hash(newRefreshToken, 10);
+    const newTokenVersion = session.tokenVersion + 1;
+
+    await this.prisma.db.session.update({
+      where: { jti },
+      data: {
+        refreshTokenHash: newRefreshTokenHash,
+        tokenVersion: newTokenVersion,
+        expiresAt: new Date(Date.now() + this.REFRESH_TTL * 1000),
+      },
+    });
+
+    // 5. Cập nhật Redis cache
+    await this.redis.cacheSession(
+      jti,
+      {
+        userId: session.userId,
+        tokenVersion: newTokenVersion,
+        roleCode: session.user.role.code,
+      },
+      this.REFRESH_TTL,
+    );
+
+    // 6. Ký accessToken mới
+    const accessToken = this.signAccessToken({
+      id: session.userId,
+      jti,
+      email: session.user.email,
+      roleCode: session.user.role.code,
+      tokenVersion: newTokenVersion,
+    });
+
+    return { accessToken, refreshToken: newRefreshToken };
+  }
+
+  //Người dùng đăng xuất khỏi thiết bị hiện tại
+  async logout(jti: string, userId: string) {
+    await Promise.all([
+      // Revoke trong DB
+      this.prisma.db.session.updateMany({
+        where: { jti, userId },
+        data: { revokedAt: new Date(), revokedReason: 'User logout' },
+      }),
+      // Blacklist + xóa cache
+      this.redis.revokeSession(jti, this.ACCESS_TTL),
+      this.redis.removeUserSession(userId, jti),
+    ]);
+
+    return { message: 'Đăng xuất thành công' };
+  }
+
+  //lấy danh sách thiết bị
+  async getSessions(userId: string) {
+    const sessions = await this.prisma.db.session.findMany({
+      where: {
+        userId,
+        revokedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+      select: {
+        id: true,
+        jti: true,
+        deviceName: true,
+        deviceIp: true,
+        createdAt: true,
+        expiresAt: true,
+        tokenVersion: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return sessions;
+  }
+
+  //logout một thiết bị cụ thể
+  async revokeSession(sessionId: string, userId: string) {
+    const session = await this.prisma.db.session.findFirst({
+      where: { id: sessionId, userId },
+    });
+
+    if (!session) throw new NotFoundException('Session không tồn tại');
+    if (session.revokedAt)
+      throw new BadRequestException('Session đã bị thu hồi');
+
+    await Promise.all([
+      this.prisma.db.session.update({
+        where: { id: sessionId },
+        data: { revokedAt: new Date(), revokedReason: 'Revoked by user' },
+      }),
+      this.redis.revokeSession(session.jti, this.ACCESS_TTL),
+      this.redis.removeUserSession(userId, session.jti),
+    ]);
+
+    return { message: 'Thu hồi phiên thành công' };
+  }
+
+  async logoutOtherSessions(currentJti: string, userId: string) {
+    // 1. Lấy tất cả session còn hoạt động ngoại trừ session hiện tại
+    const sessions = await this.prisma.db.session.findMany({
+      where: {
+        userId,
+        revokedAt: null,
+        NOT: {
+          jti: currentJti,
+        },
+      },
+      select: {
+        id: true,
+        jti: true,
+      },
+    });
+
+    // Không có session nào khác
+    if (sessions.length === 0) {
+      return {
+        message: 'Không có thiết bị nào khác để đăng xuất',
+        revokedCount: 0,
+      };
+    }
+
+    const sessionJtis = sessions.map((s) => s.jti);
+
+    // 2. Revoke trong database
+    await this.prisma.db.session.updateMany({
+      where: {
+        userId,
+        revokedAt: null,
+        NOT: {
+          jti: currentJti,
+        },
+      },
+      data: {
+        revokedAt: new Date(),
+        revokedReason: 'Logout other devices',
+      },
+    });
+
+    // 3. Blacklist tất cả jti trong Redis
+    await Promise.all([
+      ...sessionJtis.map((jti) =>
+        this.redis.revokeSession(jti, this.ACCESS_TTL),
+      ),
+      // 4. Xóa khỏi danh sách session của user
+      ...sessionJtis.map((jti) => this.redis.removeUserSession(userId, jti)),
+    ]);
+
+    // 5. Log action (optional)
+    this.logAction({
+      action: ActionType.LOGOUT,
+      entityName: 'Session',
+      entityId: userId,
+      adminId: userId,
+      newValues: {
+        revokedCount: sessions.length,
+        excludedJti: currentJti,
+      },
+    }).catch((err) => this.logger.error('ActionLog failed', err));
+
+    return {
+      message: 'Đã đăng xuất khỏi tất cả thiết bị khác',
+      revokedCount: sessions.length,
+    };
   }
 }
