@@ -4,6 +4,8 @@ import { RedisService } from '@/redis/redis.service';
 import {
   BadRequestException,
   ConflictException,
+  HttpException,
+  HttpStatus,
   Injectable,
   InternalServerErrorException,
   Logger,
@@ -21,6 +23,13 @@ import { IUser } from '@/common/interfaces/user.interface';
 import { LoginDto } from './dto/login.dto';
 import { randomUUID } from 'crypto';
 import { UAParser } from 'ua-parser-js';
+import {
+  ForgotPasswordDto,
+  ResetPasswordDto,
+  VerifyResetOtpDto,
+} from './dto/forgot-password.dto';
+import e from 'express';
+import { use } from 'passport';
 
 @Injectable()
 export class AuthService {
@@ -28,6 +37,9 @@ export class AuthService {
   private readonly BCRYPT_ROUNDS = 12;
   private readonly OTP_TTL = 300;
   private readonly MAX_OTP_ATTEMPTS = 5;
+  private readonly RESET_OTP_TTL = 600; // 10 phút
+  private readonly RESET_TOKEN_TTL = 600;
+  private readonly MAX_RESET_ATTEMPTS = 5;
 
   constructor(
     private prisma: PrismaService,
@@ -691,5 +703,199 @@ export class AuthService {
       message: 'Đã đăng xuất khỏi tất cả thiết bị khác',
       revokedCount: sessions.length,
     };
+  }
+
+  //quen mat khau
+  //1 gửi otp
+  async forgotPassword(dto: ForgotPasswordDto) {
+    const { email } = dto;
+
+    // Kiểm tra Cooldown: Chặn gửi liên tục dưới 60 giây
+    const isCooldown = await this.redis.getResetOtpCooldown(email);
+    if (isCooldown) {
+      throw new HttpException(
+        'Vui lòng đợi 60 giây trước khi yêu cầu mã mới.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    //luon tra ve 200 du email co ton tai hay khong
+    //chong user enumeration attack
+    const user = await this.prisma.db.user.findUnique({
+      where: { email },
+      select: { id: true, fullName: true, status: true, deletedAt: true },
+    });
+
+    //ghi log nhung khong bao loi ra ngoai
+    if (!user || user.deletedAt || user.status === UserStatus.BANNED) {
+      this.logger.warn(
+        `Reset password request cho email không hợp lệ: ${email}`,
+      );
+      await this.redis.setResetOtpCooldown(email, 60);
+      return { message: 'Nếu email tồn tại, mã OTP sẽ được gửi đến hộp thư.' };
+    }
+
+    let otp = await this.redis.getResetOtp(email);
+
+    // Chưa có OTP → tạo mới
+    if (!otp) {
+      otp = this.generateOtp();
+
+      // Chỉ set khi OTP chưa tồn tại
+      // -> giữ nguyên TTL nếu resend
+      await this.redis.setResetOtp(email, otp, this.RESET_OTP_TTL);
+
+      this.logger.log(`Tạo OTP mới cho email: ${email}`);
+    } else {
+      this.logger.log(`Gửi lại OTP cũ cho email: ${email}`);
+    }
+
+    // =========================================================
+    // 5. Gửi mail
+    // =========================================================
+    try {
+      await this.mail.sendPasswordReset(email, user.fullName, otp);
+    } catch (error) {
+      this.logger.error(
+        `Gửi mail reset password thất bại cho ${email}`,
+        error instanceof Error ? error.stack : String(error),
+      );
+
+      // KHÔNG set cooldown nếu mail fail
+      // -> user có thể thử lại ngay
+      throw new InternalServerErrorException(
+        'Không thể gửi email lúc này. Vui lòng thử lại.',
+      );
+    }
+
+    // =========================================================
+    // 6. Chỉ set cooldown sau khi mail thành công
+    // =========================================================
+    await this.redis.setResetOtpCooldown(email, 60);
+
+    return {
+      message: 'Nếu email tồn tại, mã OTP sẽ được gửi đến hộp thư.',
+    };
+  }
+
+  //2. xác nhận
+  async verifyResetOtp(dto: VerifyResetOtpDto) {
+    const { email, otp } = dto;
+
+    //1 kiểm tra số lần thử sai
+    const attempts = await this.redis.getOtpAttempts(email);
+    if (attempts >= this.MAX_RESET_ATTEMPTS) {
+      throw new BadRequestException(
+        'Bạn đã nhập sai OTP quá nhiều lần. Vui lòng yêu cầu lại sau 15 phút.',
+      );
+    }
+
+    //2 lấy otp từ redis
+    const storedOtp = await this.redis.getResetOtp(email);
+    if (!storedOtp) {
+      throw new BadRequestException('OTP đã hết hạn hoặc không tồn tại');
+    }
+
+    //3 so sánh timing-safe
+    const isValid = await this.timingSafeCompare(otp, storedOtp);
+    if (!isValid) {
+      const newAttempts = await this.redis.incrementResetOtpAttempts(email);
+      const remaining = this.MAX_RESET_ATTEMPTS - newAttempts;
+      throw new BadRequestException(
+        remaining > 0
+          ? `OTP không đúng. Còn ${remaining} lần thử.`
+          : 'OTP không đúng. Vui lòng yêu cầu OTP mới.',
+      );
+    }
+
+    //4. OTP đúng thì tạo resetToken UUID
+    const resetToken = randomUUID();
+
+    //5 xoá OTP + lưu resetToken + reset attempts song song
+    await Promise.all([
+      this.redis.deleteResetOtp(email),
+      this.redis.resetResetOtpAttempts(email),
+      this.redis.setResetToken(resetToken, email, this.RESET_TOKEN_TTL),
+    ]);
+
+    return {
+      message: 'Xác thực OTP thành công.',
+      resetToken, // Frontend giữ token này để gọi reset-password
+      expiresIn: this.RESET_TOKEN_TTL,
+    };
+  }
+
+  //3. reset Password
+  async resetPassword(dto: ResetPasswordDto, ipAddress: string) {
+    const { resetToken, newPassword } = dto;
+
+    //1 verify resetToken
+    const email = await this.redis.getResetToken(resetToken);
+    if (!email) {
+      throw new BadRequestException(
+        'Token đặt lại mật khẩu không hợp lệ hoặc đã hết hạn',
+      );
+    }
+
+    //2 tìm user
+    const user = await this.prisma.db.user.findUnique({
+      where: { email },
+      select: { id: true, password: true, status: true },
+    });
+
+    if (!user || user.status === UserStatus.BANNED) {
+      throw new BadRequestException('Tài khoản không hợp lệ');
+    }
+
+    //3. kiểm tra pass mới có trùng pass cũ hong
+    if (user.password) {
+      const isSame = await bcrypt.compare(newPassword, user.password);
+      if (isSame) {
+        throw new BadRequestException(
+          'Mật khẩu mới không được trùng mật khẩu cũ',
+        );
+      }
+    }
+    // 4. Hash password mới
+    const hashedPassword = await bcrypt.hash(newPassword, this.BCRYPT_ROUNDS);
+
+    //5 lấy tất cả session active để revoke
+    const activeSessions = await this.prisma.db.session.findMany({
+      where: { userId: user.id, revokedAt: null },
+      select: { id: true, jti: true },
+    });
+
+    // 6. Cập nhật password + revoke tất cả sessions SONG SONG
+    await Promise.all([
+      this.prisma.db.user.update({
+        where: { id: user.id },
+        data: { password: hashedPassword },
+      }),
+      // Revoke tất cả sessions trong DB
+      this.prisma.db.session.updateMany({
+        where: { userId: user.id, revokedAt: null },
+        data: {
+          revokedAt: new Date(),
+          revokedReason: 'Password reset',
+        },
+      }),
+      // Blacklist tất cả JTI trong Redis
+      ...activeSessions.map((s) =>
+        this.redis.revokeSession(s.jti, this.ACCESS_TTL),
+      ),
+      // Xóa resetToken
+      this.redis.deleteResetToken(resetToken),
+    ]);
+
+    // 7. Log
+    this.logAction({
+      action: ActionType.UPDATE,
+      entityName: 'User',
+      entityId: user.id,
+      newValues: { event: 'password_reset' },
+      ipAddress,
+    }).catch((err) => this.logger.error('ActionLog failed', err));
+
+    return { message: 'Đặt lại mật khẩu thành công. Vui lòng đăng nhập lại.' };
   }
 }

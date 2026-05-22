@@ -23,6 +23,11 @@ import { LoginDto } from './dto/login.dto';
 import type { Response, Request } from 'express';
 import { CurrentUser } from '@/common/decorator/current-user.decorator';
 import type { IUser } from '@/common/interfaces/user.interface';
+import {
+  ForgotPasswordDto,
+  ResetPasswordDto,
+  VerifyResetOtpDto,
+} from './dto/forgot-password.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -165,5 +170,33 @@ export class AuthController {
   })
   logoutOtherDevices(@CurrentUser() user: IUser) {
     return this.authService.logoutOtherSessions(user.jti, user.id);
+  }
+
+  //quên mật khẩu
+  @Post('forgot-password')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ short: { limit: 3, ttl: 300000 } }) // 3 lần / 5 phút
+  @ApiOperation({ summary: 'Yêu cầu OTP đặt lại mật khẩu' })
+  forgotPassword(@Body() dto: ForgotPasswordDto) {
+    return this.authService.forgotPassword(dto);
+  }
+
+  @Post('verify-reset-otp')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ short: { limit: 5, ttl: 300000 } })
+  @ApiOperation({ summary: 'Xác thực OTP để lấy resetToken' })
+  verifyResetOtp(@Body() dto: VerifyResetOtpDto) {
+    return this.authService.verifyResetOtp(dto);
+  }
+
+  @Post('reset-password')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ short: { limit: 3, ttl: 300000 } })
+  @ApiOperation({ summary: 'Đặt lại mật khẩu bằng resetToken' })
+  resetPassword(@Body() dto: ResetPasswordDto, @Ip() ip: string) {
+    return this.authService.resetPassword(dto, ip);
   }
 }

@@ -16,12 +16,6 @@ export class MailService {
   private readonly logger = new Logger(MailService.name);
 
   constructor(@InjectQueue('mail-queue') private mailQueue: Queue) {}
-
-  /**
-   * @param toEmail Email người nhận
-   * @param fullName Tên người dùng
-   * @param otp Mã OTP 6 số
-   */
   async sendUserConfirmation(toEmail: string, fullName: string, otp: string) {
     try {
       await this.mailQueue.add(
@@ -38,6 +32,25 @@ export class MailService {
       );
     } catch (error: any) {
       this.logger.error(`Lỗi khi đưa mail vào Queue: ${error.message}`);
+    }
+  }
+
+  async sendPasswordReset(toEmail: string, fullName: string, otp: string) {
+    try {
+      await this.mailQueue.add(
+        'send-reset-password', // Tên Job mới
+        { toEmail, fullName, otp },
+        {
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 3000 },
+          removeOnComplete: true,
+        },
+      );
+      this.logger.log(
+        `Đã đẩy nhiệm vụ gửi OTP Đặt Lại Mật Khẩu cho ${toEmail} vào hàng đợi.`,
+      );
+    } catch (error: any) {
+      this.logger.error(`Lỗi khi đưa mail reset vào Queue: ${error.message}`);
     }
   }
 }

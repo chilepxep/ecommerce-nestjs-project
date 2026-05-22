@@ -141,4 +141,85 @@ export class RedisService {
     const updated = sessions.filter((s) => s !== jti);
     await this.cache.set(key, JSON.stringify(updated), 30 * 24 * 3600 * 1000);
   }
+
+  //Forgot Password
+  private resetOtpKey(email: string) {
+    return `otp:reset:${email}`;
+  }
+
+  private resetOtpAttemptKey(email: string) {
+    return `otp:reset:attempts:${email}`;
+  }
+
+  private resetTokenKey(token: string) {
+    return `reset:token:${token}`;
+  }
+
+  private resetOtpCooldownKey(email: string) {
+    return `otp:reset:cooldown:${email}`;
+  }
+
+  //Reset OTP
+  async setResetOtp(
+    email: string,
+    otp: string,
+    ttlSeconds: 600,
+  ): Promise<void> {
+    await this.cache.set(this.resetOtpKey(email), otp, ttlSeconds * 1000);
+  }
+
+  async getResetOtp(email: string): Promise<string | null> {
+    const otp = await this.cache.get<string>(this.resetOtpKey(email));
+    return otp ?? null;
+  }
+
+  async deleteResetOtp(email: string): Promise<void> {
+    await this.cache.del(this.resetOtpKey(email));
+  }
+
+  async incrementResetOtpAttempts(email: string): Promise<number> {
+    const key = this.resetOtpAttemptKey(email);
+    const current = (await this.cache.get<number>(key)) ?? 0;
+    const next = current + 1;
+    await this.cache.set(key, next, 15 * 60 * 1000);
+    return next;
+  }
+
+  async resetResetOtpAttempts(email: string): Promise<void> {
+    await this.cache.del(this.resetOtpAttemptKey(email));
+  }
+
+  async setResetOtpCooldown(email: string, ttlSeconds = 60): Promise<void> {
+    await this.cache.set(
+      this.resetOtpCooldownKey(email),
+      '1',
+      ttlSeconds * 1000,
+    );
+  }
+
+  async getResetOtpCooldown(email: string): Promise<boolean> {
+    try {
+      const exists = await this.cache.get(this.resetOtpCooldownKey(email));
+      return !!exists;
+    } catch {
+      return false;
+    }
+  }
+  // ─── Reset Token (sau khi verify OTP thành công) ───────────────
+  async setResetToken(
+    token: string,
+    email: string,
+    ttlSeconds = 600,
+  ): Promise<void> {
+    await this.cache.set(this.resetTokenKey(token), email, ttlSeconds * 1000);
+  }
+
+  async getResetToken(token: string): Promise<string | null> {
+    const resetToken = await this.cache.get<string>(this.resetTokenKey(token));
+    return resetToken ?? null;
+  }
+
+  async deleteResetToken(token: string): Promise<void> {
+    await this.cache.del(this.resetTokenKey(token));
+  }
 }
