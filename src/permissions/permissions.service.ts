@@ -215,7 +215,5 @@ export class PermissionsService {
       oldValues: existing as Record<string, unknown>,
       ipAddress,
     }).catch((err) => this.logger.error('ActionLog failed', err));
-
-    return { message: 'Xóa permission thành công' };
   }
 }

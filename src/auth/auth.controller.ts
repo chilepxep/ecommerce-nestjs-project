@@ -28,12 +28,18 @@ import {
   ResetPasswordDto,
   VerifyResetOtpDto,
 } from './dto/forgot-password.dto';
+import { SkipRbac } from '@/common/decorator/skip-rbac.decorator';
+import { ResponseMessage } from '@/common/decorator/response-message.decorator';
 
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
+  @Public()
   @Post('register')
+  @ResponseMessage(
+    'Đăng ký thành công. Vui lòng kiểm tra email để xác thực OTP',
+  )
   @HttpCode(HttpStatus.CREATED)
   // Override throttle: 3 lần / 60 giây cho endpoint nhạy cảm
   @Throttle({ short: { limit: 3, ttl: 60000 } })
@@ -45,7 +51,9 @@ export class AuthController {
   }
 
   @Post('verify-email')
+  @ResponseMessage('Xác thực email thành công!')
   @HttpCode(HttpStatus.OK)
+  @ResponseMessage('Xem chi tiết permission thành công')
   @Throttle({ short: { limit: 10, ttl: 60000 } })
   @ApiOperation({ summary: 'Xác thực OTP qua email' })
   async verifyEmail(@Body() dto: VerifyEmailDto, @Ip() ip: string) {
@@ -62,6 +70,7 @@ export class AuthController {
 
   @Post('login')
   @Public()
+  @ResponseMessage('Đăng nhập thành công')
   @HttpCode(HttpStatus.OK)
   @Throttle({ short: { limit: 5, ttl: 60000 } })
   async login(
@@ -97,7 +106,7 @@ export class AuthController {
       path: '/api/v1/auth/refresh',
     });
 
-    return { message: 'Đăng nhập thành công', accessToken, sessionId };
+    return { accessToken, sessionId };
   }
 
   @Post('refresh')
@@ -136,6 +145,7 @@ export class AuthController {
   }
 
   @Post('logout')
+  @SkipRbac()
   @HttpCode(HttpStatus.OK)
   async logout(
     @CurrentUser() user: IUser,
@@ -152,12 +162,15 @@ export class AuthController {
   }
 
   @Get('sessions')
+  @SkipRbac()
+  @ResponseMessage('Lấy danh sách thiết bị đăng nhập thành công')
   @ApiOperation({ summary: 'Danh sách thiết bị đang đăng nhập' })
   getSessions(@CurrentUser() user: IUser) {
     return this.authService.getSessions(user.id);
   }
 
   @Delete('sessions/:id')
+  @SkipRbac()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Thu hồi phiên đăng nhập cụ thể' })
   revokeSession(@Param('id') sessionId: string, @CurrentUser() user: IUser) {
@@ -165,6 +178,7 @@ export class AuthController {
   }
 
   @Post('logout-others')
+  @ResponseMessage('Đã đăng xuất khỏi tất cả thiết bị khác')
   @ApiOperation({
     summary: 'Đăng xuất tất cả thiết bị khác, giữ nguyên thiết bị hiện tại',
   })

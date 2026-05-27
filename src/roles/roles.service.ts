@@ -11,12 +11,28 @@ import { PrismaService } from '@/prisma/prisma.service';
 import { ActionType } from '@/generated/prisma/enums';
 import { Prisma } from '@/generated/prisma/client';
 import { IUser } from '@/common/interfaces/user.interface';
+import { RedisService } from '@/redis/redis.service';
 
 @Injectable()
 export class RolesService {
   private readonly logger = new Logger(RolesService.name);
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private redis: RedisService,
+  ) {}
+
+  // Thêm helper
+  private async invalidateRoleCache(roleId: number): Promise<void> {
+    const role = await this.prisma.db.role.findUnique({
+      where: { id: roleId },
+      select: { code: true },
+    });
+    if (role) {
+      await this.redis.invalidateRolePermissions(role.code);
+      this.logger.log(`Đã xóa cache permissions của role: ${role.code}`);
+    }
+  }
 
   private defaultSelect() {
     return {
@@ -186,6 +202,11 @@ export class RolesService {
       ipAddress,
     }).catch((err) => this.logger.error('ActionLog failed', err));
 
+    // Thêm vào cuối trước khi return
+    if (dto.permissionIds !== undefined) {
+      await this.invalidateRoleCache(id);
+    }
+
     return role;
   }
 
@@ -217,8 +238,6 @@ export class RolesService {
       oldValues: existing as Record<string, unknown>,
       ipAddress,
     }).catch((err) => this.logger.error('ActionLog failed', err));
-
-    return { message: 'Xóa role thành công' };
   }
 
   //thêm quyền
@@ -267,6 +286,8 @@ export class RolesService {
       },
       ipAddress,
     }).catch((err) => this.logger.error('ActionLog failed', err));
+
+    await this.invalidateRoleCache(roleId);
 
     return this.findOne(roleId);
   }
@@ -318,6 +339,7 @@ export class RolesService {
       ipAddress,
     }).catch((err) => this.logger.error('ActionLog failed', err));
 
+    await this.invalidateRoleCache(roleId);
     return this.findOne(roleId);
   }
 }

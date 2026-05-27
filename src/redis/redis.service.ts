@@ -222,4 +222,45 @@ export class RedisService {
   async deleteResetToken(token: string): Promise<void> {
     await this.cache.del(this.resetTokenKey(token));
   }
+
+  ///-------------------------------------------
+  // RBAC
+
+  private rolePermissionsKey(roleCode: string) {
+    return `rbac:role:${roleCode}`;
+  }
+
+  async cacheRolePermissions(
+    roleCode: string,
+    permissions: CachedPermission[],
+    ttlSeconds = 300, // 5 phút
+  ): Promise<void> {
+    await this.cache.set(
+      this.rolePermissionsKey(roleCode),
+      JSON.stringify(permissions),
+      ttlSeconds * 1000,
+    );
+  }
+
+  async getRolePermissions(
+    roleCode: string,
+  ): Promise<CachedPermission[] | null> {
+    try {
+      const raw = await this.cache.get<string>(
+        this.rolePermissionsKey(roleCode),
+      );
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async invalidateRolePermissions(roleCode: string): Promise<void> {
+    await this.cache.del(this.rolePermissionsKey(roleCode));
+  }
+}
+
+export interface CachedPermission {
+  apiPath: string;
+  method: string;
 }

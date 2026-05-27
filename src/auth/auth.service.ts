@@ -257,7 +257,6 @@ export class AuthService {
 
     this.logger.log(`Đăng kí thành công: ${email}`);
     return {
-      message: 'Đăng ký thành công. Vui lòng kiểm tra email để xác thực OTP.',
       email: user.email,
     };
   }
@@ -333,7 +332,6 @@ export class AuthService {
     }).catch((err) => this.logger.error('ActionLog failed', err));
 
     return {
-      message: 'Xác thực email thành công!',
       user: {
         email: updatedUser.email,
         fullName: updatedUser.fullName,
@@ -700,7 +698,6 @@ export class AuthService {
     }).catch((err) => this.logger.error('ActionLog failed', err));
 
     return {
-      message: 'Đã đăng xuất khỏi tất cả thiết bị khác',
       revokedCount: sessions.length,
     };
   }
