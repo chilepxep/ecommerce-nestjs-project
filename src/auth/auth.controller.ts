@@ -13,6 +13,7 @@ import {
   Req,
   Headers,
   UnauthorizedException,
+  UseGuards,
 } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { Throttle } from '@nestjs/throttler';
@@ -30,10 +31,17 @@ import {
 } from './dto/forgot-password.dto';
 import { SkipRbac } from '@/common/decorator/skip-rbac.decorator';
 import { ResponseMessage } from '@/common/decorator/response-message.decorator';
+import { AuthGuard } from '@nestjs/passport';
+import { ConfigService } from '@nestjs/config';
+import { GoogleAuthGuard } from './guards/google-auth.guard';
+import { GoogleProfile } from './strategies/google.strategy';
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly configService: ConfigService,
+  ) {}
 
   @Public()
   @Post('register')
@@ -212,5 +220,58 @@ export class AuthController {
   @ApiOperation({ summary: 'Đặt lại mật khẩu bằng resetToken' })
   resetPassword(@Body() dto: ResetPasswordDto, @Ip() ip: string) {
     return this.authService.resetPassword(dto, ip);
+  }
+
+  // API 1: Frontend gọi vào đây -> NestJS đá sang màn hình Google
+  @Get('google')
+  @Public()
+  @UseGuards(GoogleAuthGuard)
+  @ApiOperation({ summary: 'Đăng nhập với Google' })
+  googleLogin() {
+    // Passport tự redirect sang Google — method này không chạy
+  }
+
+  @Get('google/callback')
+  @Public()
+  @UseGuards(GoogleAuthGuard)
+  @ApiOperation({ summary: 'Google OAuth callback' })
+  async googleCallback(
+    @Req() req: Request & { user: GoogleProfile },
+    @Ip() ip: string,
+    @Headers('user-agent') ua: string,
+    @Res() res: Response, // Không dùng passthrough — cần redirect
+  ) {
+    try {
+      const { accessToken, refreshToken } =
+        await this.authService.loginWithGoogle(req.user, ip, ua ?? '');
+
+      const isProd = process.env.NODE_ENV === 'production';
+      const cookieOptions = {
+        httpOnly: true,
+        secure: isProd,
+        sameSite: 'lax' as const,
+      };
+
+      // Set cookies
+      res.cookie('access_token', accessToken, {
+        ...cookieOptions,
+        maxAge: 15 * 60 * 1000,
+      });
+
+      res.cookie('refresh_token', refreshToken, {
+        ...cookieOptions,
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+        path: '/api/v1/auth/refresh',
+      });
+
+      // Redirect về frontend — không expose token trên URL
+      const frontendUrl = this.configService.get<string>('app.frontendUrl');
+      return res.redirect(`${frontendUrl}/auth/success`);
+    } catch (error: any) {
+      const frontendUrl = this.configService.get<string>('app.frontendUrl');
+      return res.redirect(
+        `${frontendUrl}/auth/error?message=${encodeURIComponent(error.message)}`,
+      );
+    }
   }
 }

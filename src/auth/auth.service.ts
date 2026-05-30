@@ -30,6 +30,7 @@ import {
 } from './dto/forgot-password.dto';
 import e from 'express';
 import { use } from 'passport';
+import { GoogleProfile } from './strategies/google.strategy';
 
 @Injectable()
 export class AuthService {
@@ -894,5 +895,184 @@ export class AuthService {
     }).catch((err) => this.logger.error('ActionLog failed', err));
 
     return { message: 'Đặt lại mật khẩu thành công. Vui lòng đăng nhập lại.' };
+  }
+
+  //login with google
+  async loginWithGoogle(
+    profile: GoogleProfile,
+    ipAddress: string,
+    userAgent: string,
+  ) {
+    const { providerId, email, fullName, avatar } = profile;
+
+    // 1. Tìm user theo providerId hoặc email
+    let user = await this.prisma.db.user.findFirst({
+      where: {
+        OR: [{ providerId }, { email }],
+      },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        providerId: true,
+        avatar: true,
+        status: true,
+        deletedAt: true,
+        role: { select: { id: true, code: true } },
+      },
+    });
+
+    if (user) {
+      // ── Tài khoản đã tồn tại ─────────────────────────────
+      if (user.deletedAt) {
+        throw new UnauthorizedException('Tài khoản không tồn tại');
+      }
+      if (user.status === UserStatus.BANNED) {
+        throw new UnauthorizedException('Tài khoản đã bị khóa');
+      }
+
+      // Lần đầu login Google nhưng email đã đăng ký thủ công
+      // → Liên kết providerId vào tài khoản hiện có
+      const needsUpdate =
+        !user.providerId || !user.avatar || user.status === UserStatus.PENDING;
+
+      if (needsUpdate) {
+        user = await this.prisma.db.user.update({
+          where: { id: user.id },
+          data: {
+            // Liên kết providerId nếu chưa có
+            ...(!user.providerId && { providerId }),
+            // Cập nhật avatar nếu chưa có
+            ...(!user.avatar && avatar && { avatar }),
+            // Kích hoạt luôn nếu đang PENDING (Google đã verify email)
+            ...(user.status === UserStatus.PENDING && {
+              status: UserStatus.ACTIVE,
+              emailVerifiedAt: new Date(),
+            }),
+          },
+          select: {
+            id: true,
+            email: true,
+            fullName: true,
+            providerId: true,
+            avatar: true,
+            status: true,
+            deletedAt: true,
+            role: { select: { id: true, code: true } },
+          },
+        });
+      }
+    } else {
+      // ── Tài khoản chưa tồn tại → Tạo mới ────────────────
+      const customerRole = await this.prisma.db.role.findUnique({
+        where: { code: RoleCode.CUSTOMER },
+        select: { id: true },
+      });
+
+      if (!customerRole) {
+        throw new InternalServerErrorException('Hệ thống chưa cấu hình role');
+      }
+
+      user = await this.prisma.db.user.create({
+        data: {
+          email,
+          fullName,
+          avatar,
+          providerId,
+          // Google đã verify email → ACTIVE luôn, không cần OTP
+          status: UserStatus.ACTIVE,
+          emailVerifiedAt: new Date(),
+          roleId: customerRole.id,
+          // password null — tài khoản Google không có password
+        },
+        select: {
+          id: true,
+          email: true,
+          fullName: true,
+          providerId: true,
+          avatar: true,
+          status: true,
+          deletedAt: true,
+          role: { select: { id: true, code: true } },
+        },
+      });
+
+      // Log tạo user mới qua Google
+      this.logAction({
+        action: ActionType.CREATE,
+        entityName: 'User',
+        entityId: user.id,
+        newValues: {
+          email,
+          fullName,
+          provider: 'google',
+          status: UserStatus.ACTIVE,
+        },
+        ipAddress,
+      }).catch((err) => this.logger.error('ActionLog failed', err));
+    }
+
+    // 2. Giới hạn session
+    await this.enforceSessionLimit(user.id);
+
+    // 3. Parse UA + tạo session
+    const ua = new UAParser(userAgent);
+    const deviceName = `${ua.getBrowser().name ?? 'Unknown'} on ${ua.getOS().name ?? 'Unknown'} (Google)`;
+
+    const jti = randomUUID();
+    const refreshToken = randomUUID();
+    const refreshTokenHash = await bcrypt.hash(refreshToken, 10);
+    const expiresAt = new Date(Date.now() + this.REFRESH_TTL * 1000);
+
+    // 4. Tạo session + cập nhật lastLoginAt song song
+    const [session] = await Promise.all([
+      this.prisma.db.session.create({
+        data: {
+          userId: user.id,
+          jti,
+          refreshTokenHash,
+          tokenVersion: 1,
+          deviceName,
+          deviceIp: ipAddress,
+          userAgent,
+          expiresAt,
+        },
+      }),
+      this.prisma.db.user.update({
+        where: { id: user.id },
+        data: { lastLoginAt: new Date() },
+      }),
+    ]);
+
+    // 5. Cache session Redis
+    await Promise.all([
+      this.redis.cacheSession(
+        jti,
+        { userId: user.id, tokenVersion: 1, roleCode: user.role.code },
+        this.REFRESH_TTL,
+      ),
+      this.redis.addUserSession(user.id, jti),
+    ]);
+
+    // 6. Ký access token
+    const accessToken = this.signAccessToken({
+      id: user.id,
+      jti,
+      email: user.email,
+      roleCode: user.role.code,
+      tokenVersion: 1,
+    });
+
+    // 7. Log login
+    this.logAction({
+      action: ActionType.LOGIN,
+      entityName: 'Session',
+      entityId: session.id,
+      adminId: user.id,
+      newValues: { provider: 'google', device: deviceName, ip: ipAddress },
+      ipAddress,
+    }).catch((err) => this.logger.error('ActionLog failed', err));
+
+    return { accessToken, refreshToken };
   }
 }

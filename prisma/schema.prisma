@@ -56,6 +56,11 @@ enum HttpMethod {
   DELETE
 }
 
+enum AuthProvider {
+  LOCAL
+  GOOGLE
+}
+
 // ======================================================
 // ROLE
 // ======================================================
@@ -109,11 +114,19 @@ model User {
   sessions         Session[]
   actionsPerformed ActionLog[]  @relation("ActionPerformedBy")
 
+
+  //OAuth2.0
+  provider        AuthProvider @default(LOCAL)
+  providerId      String?      @map("provider_id") @db.VarChar(255)
+
+  @@unique([provider, providerId]) // Ngăn chặn trùng ID
+
   // Indexes
   @@index([roleId])
   @@index([status])
   @@index([createdAt])
   @@index([deletedAt])
+  @@index([providerId])
 
   @@map("users")
 }
